@@ -1,0 +1,80 @@
+plugins {
+    id 'fabric-loom' version '1.15-SNAPSHOT'
+    id 'maven-publish'
+}
+
+version = project.mod_version
+group = project.maven_group
+
+base {
+    archivesName = archives_base_name
+}
+
+repositories {
+    maven { url 'https://maven.fabricmc.net/' }
+    mavenCentral()
+    maven {
+        name = 'Meteor'
+        url = 'https://maven.meteordev.org/releases'
+    }
+    maven {
+        name = 'Meteor Snapshots'
+        url = 'https://maven.meteordev.org/snapshots'
+    }
+}
+
+dependencies {
+    minecraft "com.mojang:minecraft:${project.minecraft_version}"
+    mappings "net.fabricmc:yarn:${project.yarn_mappings}:v2"
+    modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
+
+    // Fabric API
+    modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}"
+
+    // Meteor Client
+    modImplementation "meteordevelopment:meteor-client:${project.meteor_version}"
+}
+
+processResources {
+    def version = project.version
+    inputs.property "version", version
+    inputs.property "minecraft_version", project.minecraft_version
+    inputs.property "loader_version", project.loader_version
+    inputs.property "jdk_version", project.jdk_version
+    inputs.property "mod_id", project.mod_id
+    inputs.property "mod_name", project.mod_name
+    inputs.property "mod_description", project.mod_description
+    inputs.property "mod_author", project.mod_author
+
+    filesMatching("fabric.mod.json") {
+        expand(
+            version: version,
+            minecraft_version: project.minecraft_version,
+            loader_version: project.loader_version,
+            jdk_version: project.jdk_version,
+            mod_id: project.mod_id,
+            mod_name: project.mod_name,
+            mod_description: project.mod_description,
+            mod_author: project.mod_author
+        )
+    }
+}
+
+tasks.withType(JavaCompile).configureEach {
+    it.options.release = 21
+    it.options.encoding = 'UTF-8'
+}
+
+java {
+    withSourcesJar()
+    sourceCompatibility = JavaVersion.VERSION_21
+    targetCompatibility = JavaVersion.VERSION_21
+}
+
+publishing {
+    publications {
+        create("mavenJava", MavenPublication) {
+            from components.java
+        }
+    }
+}

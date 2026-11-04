@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "id": "${mod_id}",
+  "version": "${version}",
+  "name": "${mod_name}",
+  "description": "${mod_description}",
+  "authors": [
+    "${mod_author}"
+  ],
+  "contact": {
+    "homepage": "https://github.com/",
+    "sources": "https://github.com/"
+  },
+  "environment": "client",
+  "mixins": [
+    "synaddon.mixins.json"
+  ],
+  "entrypoints": {
+    "meteor": [
+      "com.syn.addon.SynAddon"
+    ]
+  },
+  "custom": {
+    "meteor-client:color": "0,200,255",
+    "modmenu": {
+      "parent": {
+        "id": "meteor-client"
+      }
+    }
+  },
+  "depends": {
+    "java": ">=${jdk_version}",
+    "minecraft": "${minecraft_version}",
+    "meteor-client": "*",
+    "fabric-api": "*"
+  }
+}

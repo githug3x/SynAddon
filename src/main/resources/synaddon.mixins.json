@@ -1,0 +1,12 @@
+{
+  "required": true,
+  "minVersion": "0.8",
+  "package": "com.syn.addon.mixin",
+  "compatibilityLevel": "JAVA_21",
+  "client": [
+    "LivingEntityTravelMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}
