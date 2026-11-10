@@ -5,7 +5,6 @@ import meteordevelopment.meteorclient.events.entity.player.AttackEntityEvent;
 import meteordevelopment.meteorclient.events.packets.PacketEvent;
 import meteordevelopment.meteorclient.events.world.TickEvent;
 import meteordevelopment.meteorclient.settings.BoolSetting;
-import meteordevelopment.meteorclient.settings.DoubleSetting;
 import meteordevelopment.meteorclient.settings.Setting;
 import meteordevelopment.meteorclient.settings.SettingGroup;
 import meteordevelopment.meteorclient.settings.StringSetting;
@@ -14,99 +13,113 @@ import meteordevelopment.meteorclient.utils.entity.DamageUtils;
 import meteordevelopment.meteorclient.utils.entity.fakeplayer.FakePlayerEntity;
 import meteordevelopment.meteorclient.utils.entity.fakeplayer.FakePlayerManager;
 import meteordevelopment.orbit.EventHandler;
+import net.minecraft.block.Blocks;
 import net.minecraft.entity.Entity;
+import net.minecraft.entity.damage.DamageSource;
+import net.minecraft.entity.effect.StatusEffects;
 import net.minecraft.item.ItemStack;
 import net.minecraft.item.Items;
+import net.minecraft.network.packet.s2c.play.EntityStatusS2CPacket;
 import net.minecraft.network.packet.s2c.play.ExplosionS2CPacket;
 import net.minecraft.sound.SoundCategory;
 import net.minecraft.sound.SoundEvents;
 import net.minecraft.util.Hand;
+import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Vec3d;
 
 import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Port of deepseekclient's FakePlayer module. Spawns a local FakePlayer
- * entity (using Meteor Client's FakePlayerEntity API) that mimics a real
- * player: takes damage from your attacks, pops totems, and can have its
- * trajectory recorded & replayed.
+ * 逐行复刻 deepseekclient 的 FakePlayer 模块。
  *
- * Damage / explosion formulas are simplified versions of vanilla logic so
- * you can test PvP combos, totem timing, and explosion deflection locally.
+ * 与原版的对应关系：
+ * 1. 攻击触发：原版拦截 PlayerInteractEntityC2SPacket（type == ATTACK）且目标为假人。
+ *    这里使用 Meteor 在 ClientPlayerInteractionManager#attackEntity HEAD 真实发布的
+ *    AttackEntityEvent —— 该处正是生成 ATTACK 包的唯一入口，语义完全等价。
+ * 2. 伤害结算：hurtTime <= 0 作为无敌帧闸门 → 先扣伤害吸收（absorption）→ 再扣血量。
+ * 3. 死亡：消耗图腾（等价原版私有方法 tryUseDeathProtector）→ setHealth(10)
+ *    → 派发 EntityStatusS2CPacket(status = 35) 触发图腾弹跳动画与音效。
+ * 4. 爆炸：ExplosionS2CPacket，10 格内，DamageUtils.explosionDamage(..., power = 6.0f)。
  */
 public class FakePlayerPlus extends Module {
     private final SettingGroup sgGeneral = settings.getDefaultGroup();
 
     private final Setting<String> name = sgGeneral.add(new StringSetting.Builder()
         .name("name")
-        .description("Name for the dummy.")
-        .defaultValue("SynBot")
+        .description("The name of the fake player.")
+        .defaultValue("IDhammaI")
         .build()
     );
 
-    private final Setting<Boolean> damageSim = sgGeneral.add(new BoolSetting.Builder()
-        .name("damage-sim")
-        .description("Simulates damage on attack packets.")
-        .defaultValue(true)
-        .build()
-    );
-
-    private final Setting<Boolean> explosionSim = sgGeneral.add(new BoolSetting.Builder()
-        .name("explosion-sim")
-        .description("Takes damage from nearby explosion packets.")
+    private final Setting<Boolean> damage = sgGeneral.add(new BoolSetting.Builder()
+        .name("damage")
+        .description("Takes explosion damage from nearby explosion packets.")
         .defaultValue(true)
         .build()
     );
 
     private final Setting<Boolean> autoTotem = sgGeneral.add(new BoolSetting.Builder()
         .name("auto-totem")
-        .description("Gives the dummy a totem and respawns on death.")
+        .description("Keeps a totem in the fake player's hands so it pops on lethal damage.")
         .defaultValue(true)
         .build()
     );
 
-    private final Setting<Double> explosionRadius = sgGeneral.add(new DoubleSetting.Builder()
-        .name("explosion-radius")
-        .description("Max distance from explosion source that still damages the dummy.")
-        .defaultValue(10.0)
-        .min(1.0).max(20.0).sliderRange(1.0, 20.0)
-        .visible(explosionSim::get)
+    private final Setting<Boolean> record = sgGeneral.add(new BoolSetting.Builder()
+        .name("record")
+        .description("Records your movement for later playback.")
+        .defaultValue(false)
         .build()
     );
 
-    private final Setting<Boolean> copyInv = sgGeneral.add(new BoolSetting.Builder()
-        .name("copy-inventory")
-        .description("Copies the player's inventory onto the dummy on spawn.")
-        .defaultValue(true)
+    private final Setting<Boolean> play = sgGeneral.add(new BoolSetting.Builder()
+        .name("play")
+        .description("Replays the recorded movement on the fake player.")
+        .defaultValue(false)
         .build()
     );
 
-    // ------------------------------------------------------------------
-    // State
-    // ------------------------------------------------------------------
-    private FakePlayerEntity dummy;
-    private final List<TickSample> recordBuffer = new ArrayList<>();
-    private boolean recording;
-    private boolean playing;
-    private int playIndex;
+    private FakePlayerEntity fakePlayer;
+    private final List<PlayerState> positions = new ArrayList<>();
+    private int movementTick;
+    private boolean lastRecordValue;
 
     public FakePlayerPlus() {
-        super(SynAddon.CATEGORY, "FakePlayer+", "Spawns a dummy player for offline sparring practice.");
+        super(SynAddon.CATEGORY, "FakePlayer+", "Spawns a client-side fake player that reacts to your attacks and explosions.");
     }
 
     @Override
     public void onActivate() {
-        spawn();
+        if (mc.player == null || mc.world == null) {
+            disable();
+            return;
+        }
+
+        despawn();
+        positions.clear();
+        movementTick = 0;
+        lastRecordValue = false;
+
+        FakePlayerManager.add(name.get(), 20.0f, true);
+        fakePlayer = FakePlayerManager.get(name.get());
+
+        if (fakePlayer == null) disable();
     }
 
     @Override
     public void onDeactivate() {
         despawn();
-        recordBuffer.clear();
-        recording = false;
-        playing = false;
-        playIndex = 0;
+        positions.clear();
+        movementTick = 0;
+        lastRecordValue = false;
+    }
+
+    private void despawn() {
+        if (fakePlayer != null) {
+            FakePlayerManager.remove(fakePlayer);
+            fakePlayer = null;
+        }
     }
 
     @Override
@@ -114,225 +127,154 @@ public class FakePlayerPlus extends Module {
         return name.get();
     }
 
-    // ------------------------------------------------------------------
-    // Spawn / despawn
-    // ------------------------------------------------------------------
-    private void spawn() {
-        if (mc.player == null) { disable(); return; }
-        despawn();
-        String n = name.get();
-        FakePlayerManager.add(n, 20.0f, copyInv.get());
-        dummy = FakePlayerManager.get(n);
-        if (dummy == null) { disable(); return; }
-
-        // Give the dummy a totem in the off-hand so AutoTotem pops look real
-        if (autoTotem.get()) {
-            dummy.setStackInHand(Hand.OFF_HAND, new ItemStack(Items.TOTEM_OF_UNDYING));
-        }
-    }
-
-    private void despawn() {
-        if (dummy != null) {
-            FakePlayerManager.remove(dummy);
-            dummy = null;
-        }
-    }
-
-    // ------------------------------------------------------------------
-    // Tick
-    // ------------------------------------------------------------------
     @EventHandler
-    private void onTick(TickEvent.Post event) {
-        if (mc.player == null || mc.world == null) return;
-
-        // Respawn if dummy disappeared or died
-        if (dummy == null || !FakePlayerManager.contains(dummy)) {
-            spawn();
+    private void onUpdate(TickEvent.Post event) {
+        if (fakePlayer == null || fakePlayer.getEntityWorld() != mc.world) {
+            disable();
             return;
         }
 
-        // Respawn on death
-        if (dummy.getHealth() <= 0.0f) {
-            if (autoTotem.get()) {
-                despawn();
-                spawn();
-                info("FakePlayer respawned.");
+        if (autoTotem.get()) {
+            if (fakePlayer.getOffHandStack().getItem() != Items.TOTEM_OF_UNDYING) {
+                fakePlayer.setStackInHand(Hand.OFF_HAND, new ItemStack(Items.TOTEM_OF_UNDYING));
             }
-            return;
+            if (fakePlayer.getMainHandStack().getItem() != Items.TOTEM_OF_UNDYING) {
+                fakePlayer.setStackInHand(Hand.MAIN_HAND, new ItemStack(Items.TOTEM_OF_UNDYING));
+            }
         }
 
-        // Keep off-hand stocked with totem
-        if (autoTotem.get() && dummy.getOffHandStack().getItem() != Items.TOTEM_OF_UNDYING) {
-            dummy.setStackInHand(Hand.OFF_HAND, new ItemStack(Items.TOTEM_OF_UNDYING));
+        if (record.get() && !lastRecordValue) {
+            positions.clear();
         }
+        lastRecordValue = record.get();
 
-        // Record player trajectory
-        if (recording) {
-            recordBuffer.add(new TickSample(
+        if (record.get()) {
+            positions.add(new PlayerState(
                 mc.player.getX(), mc.player.getY(), mc.player.getZ(),
                 mc.player.getYaw(), mc.player.getPitch()
             ));
         }
 
-        // Play recorded trajectory on the dummy
-        if (playing && !recordBuffer.isEmpty()) {
-            playIndex++;
-            if (playIndex >= recordBuffer.size()) playIndex = 0;
-            TickSample s = recordBuffer.get(playIndex);
-            dummy.refreshPositionAndAngles(s.x, s.y, s.z, s.yaw, s.pitch);
+        if (play.get() && !positions.isEmpty()) {
+            movementTick++;
+            if (movementTick >= positions.size()) movementTick = 0;
+
+            PlayerState p = positions.get(movementTick);
+            fakePlayer.setYaw(p.yaw);
+            fakePlayer.setPitch(p.pitch);
+            fakePlayer.setHeadYaw(p.yaw);
+            fakePlayer.updateTrackedPosition(p.x, p.y, p.z);
+            fakePlayer.refreshPositionAndAngles(p.x, p.y, p.z, p.yaw, p.pitch);
         }
     }
 
     // ------------------------------------------------------------------
-    // Damage simulation — attacks on the dummy
+    // 攻击伤害（对应原版 ATTACK 包拦截）
     // ------------------------------------------------------------------
-    /**
-     * 使用 Meteor 的 AttackEntityEvent（在 ClientPlayerInteractionManager#attackEntity
-     * 处触发），比反射解析攻击包可靠。原实现反射读取包字段在 Yarn 映射下失败且被
-     * 静默吞掉，导致假人永远"打不了"。
-     */
     @EventHandler
     private void onAttack(AttackEntityEvent event) {
-        if (!damageSim.get() || dummy == null) return;
-        if (event.entity != dummy) return;
-        applyAttackDamage();
-    }
+        if (fakePlayer == null) return;
+        if (event.entity != fakePlayer) return;
 
-    private void applyAttackDamage() {
-        if (dummy == null || mc.player == null || mc.world == null) return;
-
-        // deepseek 原版行为：命中时播放攻击音效
-        mc.world.playSoundFromEntity(
-            null, dummy, SoundEvents.ENTITY_PLAYER_ATTACK_STRONG, SoundCategory.PLAYERS, 1.0f, 1.0f
+        mc.world.playSound(
+            mc.player, fakePlayer.getX(), fakePlayer.getY(), fakePlayer.getZ(),
+            SoundEvents.ENTITY_PLAYER_HURT, SoundCategory.PLAYERS, 1.0f, 1.0f
         );
 
-        float damage = DamageUtils.getAttackDamage(mc.player, dummy);
-        if (damage <= 0.0f) return;
+        boolean crit = mc.player.fallDistance > 0.0f
+            && !mc.player.isOnGround()
+            && !mc.player.isClimbing()
+            && !mc.player.isTouchingWater()
+            && !mc.player.hasStatusEffect(StatusEffects.BLINDNESS)
+            && !mc.player.hasVehicle();
 
-        // 模拟受击无敌帧：hurtTime > 0 时伤害减半（最少 1 点）
-        if (dummy.hurtTime > 0) damage = Math.max(1.0f, damage * 0.5f);
-
-        takeDamage(damage);
-    }
-
-    /**
-     * Applies damage to the dummy, respecting totem-popping.
-     */
-    public void takeDamage(double amount) {
-        if (dummy == null) return;
-
-        // Totem pop — off-hand totem takes precedence
-        boolean totemPopped = false;
-        if (autoTotem.get() && dummy.getOffHandStack().getItem() == Items.TOTEM_OF_UNDYING) {
-            if (dummy.getHealth() - (float) amount <= 0.0f) {
-                dummy.getOffHandStack().decrement(1);
-                totemPopped = true;
-            }
-        }
-        if (!totemPopped) {
-            for (int slot = 0; slot < 46; slot++) {
-                ItemStack stack = dummy.getInventory().getStack(slot);
-                if (stack.getItem() == Items.TOTEM_OF_UNDYING
-                    && dummy.getHealth() - (float) amount <= 0.0f) {
-                    stack.decrement(1);
-                    totemPopped = true;
-                    break;
-                }
-            }
-        }
-
-        if (totemPopped) {
-            dummy.setHealth(10.0f); // totem pop gives back 5 HP + 5 absorption
-            dummy.setAbsorptionAmount(5.0f);
-            return;
-        }
-
-        float newHealth = Math.max(0.0f, dummy.getHealth() - (float) amount);
-        dummy.setHealth(newHealth);
-
-        // Simple knockback
-        if (mc.player != null) {
-            double kx = dummy.getX() - mc.player.getX();
-            double kz = dummy.getZ() - mc.player.getZ();
-            double kMag = Math.sqrt(kx * kx + kz * kz) + 0.001;
-            dummy.addVelocity(
-                (kx / kMag) * 0.4,
-                0.3,
-                (kz / kMag) * 0.4
+        if (crit) {
+            mc.world.playSound(
+                mc.player, fakePlayer.getX(), fakePlayer.getY(), fakePlayer.getZ(),
+                SoundEvents.ENTITY_PLAYER_ATTACK_CRIT, SoundCategory.PLAYERS, 1.0f, 1.0f
             );
+            mc.player.addCritParticles(fakePlayer);
         }
+
+        applyDamage(DamageUtils.getAttackDamage(mc.player, fakePlayer));
     }
 
     // ------------------------------------------------------------------
-    // Explosion damage simulation
+    // 爆炸伤害（对应原版 PacketEvent.Receive 分支）
     // ------------------------------------------------------------------
     @EventHandler
     private void onPacketReceive(PacketEvent.Receive event) {
-        if (!explosionSim.get() || dummy == null) return;
-        if (!(event.packet instanceof ExplosionS2CPacket packet)) return;
+        if (!damage.get() || fakePlayer == null) return;
+        if (!(event.packet instanceof ExplosionS2CPacket explosion)) return;
 
-        // 1.21.11 的 ExplosionS2CPacket 是 record：center() 为爆炸位置，radius() 为当量。
-        // 原实现反射读取 x/y/z/power 字段在 Yarn 映射下失败且被静默吞掉。
-        Vec3d center = packet.center();
-        Vec3d dummyPos = dummy.getEntityPos();
-        double dist = center.distanceTo(dummyPos);
-        if (dist > explosionRadius.get()) return;
+        Vec3d pos = explosion.center();
+        if (Math.sqrt(pos.squaredDistanceTo(fakePlayer.getEntityPos())) > 10.0) return;
 
-        float radius = packet.radius();
-        if (radius <= 0.0f) radius = 6.0f; // 结晶爆炸当量（deepseek 原版固定 6.0f）
-
-        // 用 Meteor 的完整结晶伤害计算（含护甲/保护附魔/方块遮挡，固定 6.0 当量）
-        float dmg = DamageUtils.crystalDamage(dummy, center);
-        if (dmg <= 0.0f && radius > 0.0f) {
-            // 非结晶当量的爆炸（TNT 等）退化为线性衰减近似
-            double falloff = Math.max(0.1, 1.0 - dist / explosionRadius.get());
-            dmg = (float) (radius * 2.0 * falloff);
+        float dmg;
+        if (mc.world.getBlockState(BlockPos.ofFloored(pos)).isOf(Blocks.RESPAWN_ANCHOR)) {
+            // 原版：爆炸点是重生锚时改用 AutoAnchor 的伤害计算
+            dmg = DamageUtils.anchorDamage(fakePlayer, pos);
+        } else {
+            dmg = DamageUtils.explosionDamage(
+                fakePlayer,
+                fakePlayer.getEntityPos(),
+                fakePlayer.getBoundingBox(),
+                pos,
+                6.0f,
+                DamageUtils.HIT_FACTORY
+            );
         }
-        if (dmg > 0.0f) takeDamage(dmg);
+
+        applyDamage(dmg);
     }
 
     // ------------------------------------------------------------------
-    // Recording / playback
+    // 伤害结算（与原版一致：无敌帧 → 吸收 → 血量 → 图腾）
     // ------------------------------------------------------------------
-    public void startRecording() {
-        if (dummy == null) spawn();
-        recordBuffer.clear();
-        recording = true;
-        playing = false;
-        playIndex = 0;
-        info("Recording started.");
-    }
+    private void applyDamage(float dmg) {
+        if (fakePlayer == null || mc.world == null) return;
 
-    public void stopRecording() {
-        recording = false;
-        info("Recording stopped (" + recordBuffer.size() + " samples).");
-    }
+        // 原版：if (fakePlayer.hurtTime <= 0)
+        if (fakePlayer.hurtTime > 0) return;
 
-    public void startPlayback() {
-        if (recordBuffer.isEmpty()) return;
-        playing = true;
-        recording = false;
-        playIndex = 0;
-        info("Playback started (" + recordBuffer.size() + " samples).");
-    }
+        DamageSource source = mc.world.getDamageSources().generic();
 
-    public void stopPlayback() {
-        playing = false;
-        if (dummy != null && mc.player != null) {
-            dummy.refreshPositionAndAngles(mc.player.getX(), mc.player.getY(), mc.player.getZ(), mc.player.getYaw(), mc.player.getPitch());
+        // 等价于原版 fakePlayer.onDamaged(source)：设置受击闪烁
+        fakePlayer.hurtTime = 10;
+        fakePlayer.maxHurtTime = 10;
+
+        if (fakePlayer.getAbsorptionAmount() >= dmg) {
+            fakePlayer.setAbsorptionAmount(fakePlayer.getAbsorptionAmount() - dmg);
+        } else {
+            float rest = dmg - fakePlayer.getAbsorptionAmount();
+            fakePlayer.setAbsorptionAmount(0.0f);
+            fakePlayer.setHealth(fakePlayer.getHealth() - rest);
         }
-        info("Playback stopped.");
+
+        if (fakePlayer.isDead()) {
+            // 等价于原版 tryUseDeathProtector(source)
+            ItemStack offhand = fakePlayer.getStackInHand(Hand.OFF_HAND);
+            ItemStack totem = offhand.isOf(Items.TOTEM_OF_UNDYING) ? offhand : fakePlayer.getMainHandStack();
+
+            if (totem.isOf(Items.TOTEM_OF_UNDYING)) {
+                totem.decrement(1);
+                fakePlayer.setHealth(10.0f);
+                fakePlayer.setAbsorptionAmount(5.0f);
+                new EntityStatusS2CPacket(fakePlayer, (byte) 35).apply(mc.getNetworkHandler());
+            }
+        }
     }
 
-    public boolean isRecording() { return recording; }
-    public boolean isPlaying() { return playing; }
-    public List<TickSample> getRecordBuffer() { return recordBuffer; }
-
-    public static final class TickSample {
+    public static final class PlayerState {
         public final double x, y, z;
         public final float yaw, pitch;
-        public TickSample(double x, double y, double z, float yaw, float pitch) {
-            this.x = x; this.y = y; this.z = z; this.yaw = yaw; this.pitch = pitch;
+
+        public PlayerState(double x, double y, double z, float yaw, float pitch) {
+            this.x = x;
+            this.y = y;
+            this.z = z;
+            this.yaw = yaw;
+            this.pitch = pitch;
         }
     }
 }

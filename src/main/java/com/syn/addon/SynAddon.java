@@ -33,8 +33,10 @@ public class SynAddon extends MeteorAddon {
         Modules.get().add(new BowBomb());
         Modules.get().add(new MaceSpoof2());
         Modules.get().add(new AutoEZ());
-        Modules.get().add(new BlockLag());
         Modules.get().add(new FakePlayerPlus());
+        Modules.get().add(new AutoPortalBuilder());
+        Modules.get().add(new VoidMaceGhost());
+        Modules.get().add(new AutoWitherBuilder());
     }
 
     @Override

@@ -12,7 +12,6 @@ import net.minecraft.block.Blocks;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.ExperienceOrbEntity;
 import net.minecraft.entity.ItemEntity;
-import net.minecraft.entity.EntityPose;
 import net.minecraft.entity.decoration.EndCrystalEntity;
 import net.minecraft.entity.projectile.ArrowEntity;
 import net.minecraft.entity.projectile.thrown.ExperienceBottleEntity;
@@ -352,18 +351,20 @@ public class BurrowPlus extends Module {
         progress = 0;
         placePos.clear();
 
-        BlockPos pos1 = blockPos(mc.player.getX() + 0.3, mc.player.getY() + 0.5, mc.player.getZ() + 0.3);
-        BlockPos pos2 = blockPos(mc.player.getX() - 0.3, mc.player.getY() + 0.5, mc.player.getZ() + 0.3);
-        BlockPos pos3 = blockPos(mc.player.getX() + 0.3, mc.player.getY() + 0.5, mc.player.getZ() - 0.3);
-        BlockPos pos4 = blockPos(mc.player.getX() - 0.3, mc.player.getY() + 0.5, mc.player.getZ() - 0.3);
-        BlockPos pos5 = blockPos(mc.player.getX() + 0.3, mc.player.getY() + 1.5, mc.player.getZ() + 0.3);
-        BlockPos pos6 = blockPos(mc.player.getX() - 0.3, mc.player.getY() + 1.5, mc.player.getZ() + 0.3);
-        BlockPos pos7 = blockPos(mc.player.getX() + 0.3, mc.player.getY() + 1.5, mc.player.getZ() - 0.3);
-        BlockPos pos8 = blockPos(mc.player.getX() - 0.3, mc.player.getY() + 1.5, mc.player.getZ() - 0.3);
-        BlockPos pos9 = blockPos(mc.player.getX() + 0.3, mc.player.getY() - 1.0, mc.player.getZ() + 0.3);
-        BlockPos pos10 = blockPos(mc.player.getX() - 0.3, mc.player.getY() - 1.0, mc.player.getZ() + 0.3);
-        BlockPos pos11 = blockPos(mc.player.getX() + 0.3, mc.player.getY() - 1.0, mc.player.getZ() - 0.3);
-        BlockPos pos12 = blockPos(mc.player.getX() - 0.3, mc.player.getY() - 1.0, mc.player.getZ() - 0.3);
+        // 原版：single 模式 offset 为 0，否则为玩家碰撞箱半径（0.3）
+        double offset = single.get() ? 0.0 : 0.3;
+        BlockPos pos1 = blockPos(mc.player.getX() + offset, mc.player.getY() + 0.5, mc.player.getZ() + offset);
+        BlockPos pos2 = blockPos(mc.player.getX() - offset, mc.player.getY() + 0.5, mc.player.getZ() + offset);
+        BlockPos pos3 = blockPos(mc.player.getX() + offset, mc.player.getY() + 0.5, mc.player.getZ() - offset);
+        BlockPos pos4 = blockPos(mc.player.getX() - offset, mc.player.getY() + 0.5, mc.player.getZ() - offset);
+        BlockPos pos5 = blockPos(mc.player.getX() + offset, mc.player.getY() + 1.5, mc.player.getZ() + offset);
+        BlockPos pos6 = blockPos(mc.player.getX() - offset, mc.player.getY() + 1.5, mc.player.getZ() + offset);
+        BlockPos pos7 = blockPos(mc.player.getX() + offset, mc.player.getY() + 1.5, mc.player.getZ() - offset);
+        BlockPos pos8 = blockPos(mc.player.getX() - offset, mc.player.getY() + 1.5, mc.player.getZ() - offset);
+        BlockPos pos9 = blockPos(mc.player.getX() + offset, mc.player.getY() - 1.0, mc.player.getZ() + offset);
+        BlockPos pos10 = blockPos(mc.player.getX() - offset, mc.player.getY() - 1.0, mc.player.getZ() + offset);
+        BlockPos pos11 = blockPos(mc.player.getX() + offset, mc.player.getY() - 1.0, mc.player.getZ() - offset);
+        BlockPos pos12 = blockPos(mc.player.getX() - offset, mc.player.getY() - 1.0, mc.player.getZ() - offset);
         BlockPos playerPos = playerPos(true);
 
         boolean fillHead = false;
@@ -391,7 +392,8 @@ public class BurrowPlus extends Module {
         attackCrystal(pos3, rotate);
         attackCrystal(pos4, rotate);
 
-        if (fillHead || mc.player.getPose() == EntityPose.SWIMMING
+        // 原版检查 isCrawling()（1.5 格爬行），不是游泳姿势
+        if (fillHead || mc.player.isCrawling()
             || trapped(headPos)
             || trapped(headPos.add(1, 0, 0)) || trapped(headPos.add(-1, 0, 0))
             || trapped(headPos.add(0, 0, 1)) || trapped(headPos.add(0, 0, -1))
@@ -609,7 +611,10 @@ public class BurrowPlus extends Module {
         BlockHitResult result = new BlockHitResult(directionVec, side, pos, false);
 
         if (packet) {
-            mc.player.networkHandler.sendPacket(new PlayerInteractBlockC2SPacket(hand, result, 0));
+            // 原版用 sendSequencedPacket 携带真实 sequence id，固定 0 会被严格服务器回滚
+            mc.player.networkHandler.sendPacket(new PlayerInteractBlockC2SPacket(
+                hand, result, mc.player.currentScreenHandler.getRevision()
+            ));
         } else {
             mc.interactionManager.interactBlock(mc.player, hand, result);
         }
@@ -637,7 +642,7 @@ public class BurrowPlus extends Module {
             }
 
             mc.player.networkHandler.sendPacket(net.minecraft.network.packet.c2s.play.PlayerInteractEntityC2SPacket.attack(entity, mc.player.isSneaking()));
-            mc.player.resetTicksSince();
+            mc.player.resetTicksSinceLastAttack();
             SynUtils.swingHand(Hand.MAIN_HAND, SynUtils.SwingSide.All);
 
             if (rotate) snapAt(oldYaw, oldPitch);
@@ -744,6 +749,8 @@ public class BurrowPlus extends Module {
     private boolean hasEntity(BlockPos pos) {
         for (Entity entity : mc.world.getOtherEntities(null, new Box(pos))) {
             if (entity == mc.player || !entity.isAlive()) continue;
+            // 原版 BlockUtil.getEntities 默认忽略盔甲架
+            if (entity instanceof net.minecraft.entity.decoration.ArmorStandEntity) continue;
             if (entity instanceof ItemEntity
                 || entity instanceof ExperienceOrbEntity
                 || entity instanceof ExperienceBottleEntity
