@@ -18,3 +18,6 @@ A Meteor Addon made for 2b2t.xin(Running on Minecraft 1.21.11).
 | MaceSpoof2 | Forever 版 mace spoof 实现 |
 | Offhand+ | 副手物品 |
 | Skybox | 自定义天空盒纹理 |
+
+
+ps:AI打滑客户端，BUG一堆很正常,后面会加一些原创功能
