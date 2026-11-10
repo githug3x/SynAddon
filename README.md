@@ -3,7 +3,9 @@ A Meteor Addon made for 2b2t.xin(Running on Minecraft 1.21.11).
 |---|---|
 | AutoArmor+ | 自动从背包装备最优护甲 |
 | AutoEZ | 自动嘲讽,播报图腾被破、玩家断线等事件 |
-| BlockLag | 卡黑曜石+|
+| AutoPortalBuilder | 自动建造地狱门 |
+| AutoWitherBuilder | 自动凋零 |
+| BlockLag (Removed)| 卡黑曜石+|
 | BowBomb | 欺骗移动包让蓄力弓射击变成爆炸 |
 | Burrow+ | 卡黑曜石|
 | CrystalHurtPeople | 光速水晶|
@@ -18,6 +20,7 @@ A Meteor Addon made for 2b2t.xin(Running on Minecraft 1.21.11).
 | MaceSpoof2 | Forever 版 mace spoof 实现 |
 | Offhand+ | 副手物品 |
 | Skybox | 自定义天空盒纹理 |
+| VoidMaceGhost | 无伤虚空重锤(移植自https://github.com/ChunEcho/aevum-client) |
 
 
 ps:AI打滑客户端，BUG一堆很正常,后面会加一些原创功能
